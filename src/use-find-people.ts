@@ -63,7 +63,7 @@ function useDirectContacts(session?: Session) {
       .then(async (saved) => {
         if (signal.aborted) return;
         setSaved({ accountId: person.id, people: saved.people });
-        await syncConversations(webex, person, saved, signal, rememberPerson);
+        await syncConversations(webex.createBackgroundClient(), person, saved, signal, rememberPerson);
       })
       .catch(() => {
         // Directory search is still available when history cannot be loaded.
@@ -99,7 +99,10 @@ export function useFindPeople(session?: Session, preview?: ConnectionPreview) {
   );
   const avatarImages = useAvatarImages(people, session, remembered);
   const readingSavedPeople = enabled && savedPeople === undefined && !preview?.conversations;
-  const isLoading = (page.isLoading && !cachedPeople) || (readingSavedPeople && people.length === 0);
+  const nameSearchRestricted = webex?.isNameSearchRestricted ?? false;
+  const isLoading =
+    (page.isLoading && !cachedPeople && (isEmailSearch || !nameSearchRestricted)) ||
+    (readingSavedPeople && people.length === 0);
   const noMatches =
     page.hasLoaded && !page.isLoading && !readingSavedPeople && !page.error && !page.loadMore && people.length === 0;
   const showEmailFallback =
@@ -119,6 +122,7 @@ export function useFindPeople(session?: Session, preview?: ConnectionPreview) {
     avatarImages,
     rememberPerson,
     isLoading,
+    nameSearchRestricted,
     noMatches,
     showEmailFallback,
     error: page.error,

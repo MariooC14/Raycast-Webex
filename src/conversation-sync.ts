@@ -5,6 +5,7 @@ import { Message, Person, Space, WebexClient, WebexResponseError } from "./webex
 
 const syncInterval = 10 * 60_000;
 const requestInterval = 300;
+const maxMessagePages = 3;
 
 function isAuthor(message: Message, person: Person): boolean {
   if (message.personId) return message.personId === person.id;
@@ -43,7 +44,7 @@ async function checkDirectSpace(webex: WebexClient, space: Space, account: Perso
   let next: string | undefined;
   const pages = new Set<string>();
 
-  do {
+  for (let pageCount = 0; pageCount < maxMessagePages; pageCount++) {
     await setTimeout(requestInterval, undefined, { signal });
     const page = await webex.listMessages(space.id, next, signal);
     sent ||= page.items.some((message) => isAuthor(message, account));
@@ -54,9 +55,10 @@ async function checkDirectSpace(webex: WebexClient, space: Space, account: Perso
     }
     if (sent && otherPerson) return { sent, person: otherPerson };
     next = page.next;
-    if (next && pages.has(next)) throw new Error("Webex returned a repeated message page.");
-    if (next) pages.add(next);
-  } while (next);
+    if (!next) break;
+    if (pages.has(next)) throw new Error("Webex returned a repeated message page.");
+    pages.add(next);
+  }
 
   return { sent, person: undefined };
 }

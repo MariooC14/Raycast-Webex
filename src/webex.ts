@@ -57,6 +57,8 @@ export class WebexResponseError extends Error {
   }
 }
 
+class DirectoryNameSearchRestricted extends Error {}
+
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "Webex could not complete the request.";
 }
@@ -72,6 +74,14 @@ function nextLink(header: string | null): string | undefined {
 function peopleSearchPath(query: string, byEmail: boolean): string {
   const parameters = new URLSearchParams({ [byEmail ? "email" : "displayName"]: query, max: pageSize });
   return `people?${parameters}`;
+}
+
+function isDirectoryNameSearchError(body: unknown): boolean {
+  const { message, errors } = (body ?? {}) as { message?: unknown; errors?: { description?: unknown }[] };
+  const descriptions = Array.isArray(errors) ? errors.map((error) => error?.description) : [];
+  return [message, ...descriptions].some(
+    (value) => typeof value === "string" && /displayname/i.test(value) && /consumer/i.test(value),
+  );
 }
 
 const readErrors = {
@@ -90,12 +100,17 @@ export class WebexClient {
   private readonly spaces = new ReadCache<Page<Space>>(12);
   private readonly messages = new ReadCache<Page<Message>>(24);
   private readonly people = new ReadCache<Page<Person>>(12);
+  private nameSearchRestricted = false;
   private retryAt = 0;
 
   constructor(
     private readonly accessToken: (signal?: AbortSignal) => Promise<string>,
     private readonly accountId?: string,
   ) {}
+
+  createBackgroundClient(): WebexClient {
+    return new WebexClient(this.accessToken, this.accountId);
+  }
 
   async getMe(signal?: AbortSignal): Promise<Person> {
     const { body } = await this.request("people/me", { signal });
@@ -149,17 +164,32 @@ export class WebexClient {
   }
 
   getCachedPeople(query: string, byEmail: boolean): Page<Person> | undefined {
+    if (!byEmail && this.nameSearchRestricted) return;
     return this.people.peek(peopleSearchPath(query, byEmail));
   }
 
-  findPeople(
+  get isNameSearchRestricted(): boolean {
+    return this.nameSearchRestricted;
+  }
+
+  async findPeople(
     query: string,
     byEmail: boolean,
     next?: string,
     signal?: AbortSignal,
     refresh = false,
   ): Promise<Page<Person>> {
-    return this.getPage(this.people, next ?? peopleSearchPath(query, byEmail), 120_000, refresh, signal);
+    if (!byEmail && this.nameSearchRestricted && !refresh) return { items: [] };
+    try {
+      const page = await this.getPage(this.people, next ?? peopleSearchPath(query, byEmail), 120_000, refresh, signal);
+      if (!byEmail) this.nameSearchRestricted = false;
+      return page;
+    } catch (error) {
+      if (byEmail || !(error instanceof DirectoryNameSearchRestricted)) throw error;
+      signal?.throwIfAborted();
+      this.nameSearchRestricted = true;
+      return { items: [] };
+    }
   }
 
   async sendMessage(recipient: Recipient, text: string): Promise<void> {
@@ -239,6 +269,7 @@ export class WebexClient {
     options.signal?.throwIfAborted();
     this.checkRateLimit();
     const sending = options.method === "POST";
+    const isNameSearch = url.pathname === "/v1/people" && url.searchParams.has("displayName");
     const { response, body } = await fetchWithTimeout(
       url,
       {
@@ -250,12 +281,17 @@ export class WebexClient {
         },
       },
       async (response, signal) => {
-        if (!sending && response.ok) return { response, body: await readJson(response, signal) };
+        if ((!sending && response.ok) || (isNameSearch && response.status === 400)) {
+          return { response, body: await readJson(response, signal) };
+        }
         discardBody(response);
         return { response };
       },
       sending ? sendErrors : readErrors,
     );
+    if (isNameSearch && response.status === 400 && isDirectoryNameSearchError(body)) {
+      throw new DirectoryNameSearchRestricted();
+    }
     this.checkResponse(response, sending);
     return { body, headers: response.headers };
   }

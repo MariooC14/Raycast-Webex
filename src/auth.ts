@@ -2,6 +2,7 @@ import { environment, LocalStorage, OAuth } from "@raycast/api";
 import { fetchWithTimeout, readJson } from "./http";
 import { oauthConfig, oauthIsConfigured } from "./oauth-config";
 import {
+  clearSavedConversations,
   forgetConversationAccount,
   getConversationAccount,
   readSavedConversations,
@@ -53,7 +54,10 @@ function isSameTokenSet(left: OAuth.TokenSet, right?: OAuth.TokenSet): boolean {
 }
 
 async function refreshTokenSet(tokens: OAuth.TokenSet): Promise<string> {
-  if (!tokens.refreshToken) throw new SignInRequired();
+  if (!tokens.refreshToken) {
+    await oauthClient.removeTokens();
+    throw new SignInRequired();
+  }
 
   const { status, ok, body } = await requestTokens(oauthConfig.refreshTokenUrl || oauthConfig.tokenUrl, {
     grant_type: "refresh_token",
@@ -69,7 +73,10 @@ async function refreshTokenSet(tokens: OAuth.TokenSet): Promise<string> {
 
   if (!ok) {
     const error = body as { error?: string } | undefined;
-    if (error?.error === "invalid_grant" || status === 401) throw new SignInRequired();
+    if (error?.error === "invalid_grant" || status === 401) {
+      await oauthClient.removeTokens();
+      throw new SignInRequired();
+    }
     throw new Error("Webex could not refresh your sign-in. Try again shortly.");
   }
 
@@ -156,19 +163,21 @@ export async function restoreSession(
   if (!developerToken && (!oauthIsConfigured || !(await oauthClient.getTokens()))) return;
 
   const mode = developerToken ? "developer" : "oauth";
-  const token = developerToken ?? (await getAccessToken(mode));
-
-  if (previewView && showPreview) {
-    const [spaces, account] = await Promise.all([
-      previewView === "spaces" ? readSavedSpaces(token) : undefined,
-      getConversationAccount(token),
-    ]);
-    const conversations = account ? await readSavedConversations(account.id) : undefined;
-    signal?.throwIfAborted();
-    showPreview({ account, spaces: previewView === "spaces" ? (spaces?.page ?? null) : undefined, conversations });
-  }
+  let token = developerToken;
 
   try {
+    token ??= await getAccessToken(mode);
+
+    if (previewView && showPreview) {
+      const [spaces, account] = await Promise.all([
+        previewView === "spaces" ? readSavedSpaces(token) : undefined,
+        getConversationAccount(token),
+      ]);
+      const conversations = account ? await readSavedConversations(account.id) : undefined;
+      signal?.throwIfAborted();
+      showPreview({ account, spaces: previewView === "spaces" ? (spaces?.page ?? null) : undefined, conversations });
+    }
+
     return await createSession(mode, token, signal);
   } catch (error) {
     if (error instanceof SignInRequired) {
@@ -223,11 +232,11 @@ export async function saveDeveloperToken(value: string): Promise<Session> {
 export async function removeDeveloperToken() {
   if (environment.isDevelopment) {
     await LocalStorage.removeItem(developerTokenKey);
-    await Promise.all([clearSavedSpaces(), forgetConversationAccount()]);
+    await Promise.all([clearSavedSpaces(), clearSavedConversations()]);
   }
 }
 
 export async function signOutOfWebex() {
   await oauthClient.removeTokens();
-  await Promise.all([clearSavedSpaces(), forgetConversationAccount()]);
+  await Promise.all([clearSavedSpaces(), clearSavedConversations()]);
 }

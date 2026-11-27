@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { LocalStorage } from "@raycast/api";
+import { fingerprint } from "./saved-conversations";
 import type { Page, Space } from "./webex";
 
 const spacesKey = "webex-first-space-page";
@@ -8,10 +8,6 @@ export const spacePageLifetime = 60_000;
 const savedPageLifetime = 24 * 60 * 60_000;
 
 type SavedSpaces = { credential: string; requestedAt: number; savedAt: number; page: Page<Space> };
-
-function fingerprint(token: string): string {
-  return createHash("sha256").update(token).digest("hex");
-}
 
 export async function readSavedSpaces(token: string): Promise<{ page: Page<Space>; fresh: boolean } | undefined> {
   try {
